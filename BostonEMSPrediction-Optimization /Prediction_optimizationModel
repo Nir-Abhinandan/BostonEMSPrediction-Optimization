@@ -1,0 +1,263 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import pandas as pd
+import statsmodels.api as sm
+from matplotlib.ticker import FuncFormatter
+import mplcursors
+
+# Original Data
+initial_clinical_incidents = [111000, 116000, 120000, 122000, 125000, 126500, 126000, 127200, 126790]
+
+spatial_distribution = {
+    'Allston/Brighton': 0.0579,
+    'Boston Central': 0.2272,
+    'Charlestown': 0.0186,
+    'East Boston': 0.0581,
+    'South Boston': 0.0542,
+    'Roxbury': 0.1733,
+    'Dorchester': 0.2217,
+    'Roslindale': 0.0272,
+    'Jamaica Plain': 0.0526,
+    'West Roxbury': 0.0265,
+    'Hyde Park': 0.0387,
+    'Mattapan': 0.0378,
+    'Other': 0.0062
+}
+
+pct_change = [(initial_clinical_incidents[i + 1] - initial_clinical_incidents[i]) / initial_clinical_incidents[i] * 100
+              for i in range(len(initial_clinical_incidents) - 1)]
+
+# Functions
+def simulate_demand(start_year, num_years, pct_change_normal_dist):
+    simulated_demand = []
+    last_known_value = initial_clinical_incidents[0]
+    for i in range(num_years):
+        if i == 0:
+            projected_demand = initial_clinical_incidents[0]
+        else:
+            projected_demand = last_known_value * (1 + pct_change_normal_dist[i - 1] / 100)
+        simulated_demand.append(projected_demand)
+        last_known_value = projected_demand
+    return simulated_demand
+
+def generate_forecast():
+    try:
+        start_year = int(start_year_entry.get())
+        end_year = int(end_year_entry.get())
+        method = smoothing_method.get()
+
+        if start_year >= end_year:
+            raise ValueError("End year must be greater than start year")
+
+        num_years = end_year - start_year + 1
+        pct_change_normal_dist = np.random.normal(loc=np.mean(pct_change), scale=np.std(pct_change), size=num_years)
+
+        global simulated_demand
+        simulated_demand = simulate_demand(start_year, num_years, pct_change_normal_dist)
+
+        df = pd.DataFrame(simulated_demand, columns=['Simulated Demand'])
+
+        # Exponential Smoothing Method
+        if method == "Exponential Smoothing":
+            alpha_factor = float(smoothing_factor_entry.get())
+            if not (0 < alpha_factor < 1):
+                raise ValueError("Smoothing factor must be between 0 and 1")
+            model = sm.tsa.SimpleExpSmoothing(df['Simulated Demand']).fit(smoothing_level=alpha_factor, optimized=False)
+            df['Forecast'] = model.fittedvalues
+
+            # Add SMA line (3-year window as an example)
+            sma_window = 3  # You can adjust the window size based on your requirements
+            df['SMA'] = df['Simulated Demand'].rolling(window=sma_window).mean()
+
+        # Simple Moving Average Method
+        elif method == "Simple Moving Average":
+            window = int(sma_window_entry.get())
+            if window <= 0:
+                raise ValueError("SMA window must be a positive integer")
+            df['Forecast'] = df['Simulated Demand'].rolling(window=window).mean()
+
+            # Add SMA line (This is already calculated in the previous step)
+            df['SMA'] = df['Forecast']
+
+        # Save data to CSV
+        df.to_csv("demand.csv", index=False)
+
+        ax1.clear()
+        ax1.plot(range(start_year, start_year + num_years), df['Simulated Demand'], label='Simulated Demand', color='blue')
+
+        # Plot the forecast based on the selected method (Exponential Smoothing or SMA)
+        ax1.plot(range(start_year, start_year + num_years), df['Forecast'], label=f'{method} Forecast', linestyle='dashed', color='green')
+
+        # Add SMA line to the graph
+        ax1.plot(range(start_year, start_year + num_years), df['SMA'], label='Simple Moving Average (SMA)', color='purple', linestyle='--')
+
+        ax1.set_xlabel('Year')
+        ax1.set_ylabel('Demand')
+        ax1.set_title(f'Simulated Normal Demand vs {method} Forecast')
+        ax1.legend()
+        ax1.grid(True)
+
+        outsourcing_percentage = float(outsourcing_percentage_entry.get()) / 100
+        cost_per_outsourced_call = float(cost_per_outsourced_call_entry.get())
+        internal_cost_per_call = float(internal_cost_per_call_entry.get())
+
+        outsourcing_costs = [outsourcing_percentage * cost_per_outsourced_call * call for call in simulated_demand]
+        internal_costs = [(1 - outsourcing_percentage) * internal_cost_per_call * call for call in simulated_demand]
+        internal_only_costs = [internal_cost_per_call * call for call in simulated_demand]
+
+        total_outsourcing_cost = sum(outsourcing_costs)
+        total_internal_cost = sum(internal_costs)
+        total_combined_cost = total_outsourcing_cost + total_internal_cost
+
+        internal_total_cost = [internal_cost_per_call * call for call in simulated_demand]
+        total_internal_cost_no_outsourcing = sum(internal_total_cost)
+
+        # Create and show the second pop-up window with the costs graphs
+        show_costs_graph(start_year, num_years, outsourcing_costs, internal_costs, internal_only_costs, total_outsourcing_cost, total_internal_cost, total_combined_cost, total_internal_cost_no_outsourcing)
+
+        # Add annotations for total costs
+        ax1.annotate(f'Total Outsourcing Cost: ${total_outsourcing_cost:,.2f}',
+                     xy=(0.5, 0.1), xycoords='axes fraction', fontsize=10, color='red', ha='center')
+        ax1.annotate(f'Total Internal Cost: ${total_internal_cost:,.2f}',
+                     xy=(0.5, 0.05), xycoords='axes fraction', fontsize=10, color='blue', ha='center')
+
+        canvas.draw()
+
+    except ValueError as ve:
+        messagebox.showerror("Error", str(ve))
+
+
+def show_spatial_distribution():
+    try:
+        start_year = int(start_year_entry.get())
+        end_year = int(end_year_entry.get())
+        num_years = end_year - start_year + 1
+
+        distribution_info = "Year\tArea\t\t\tDemand (incidents)\n" + "-" * 50 + "\n"
+        for year in range(start_year, start_year + num_years):
+            for area, pct in spatial_distribution.items():
+                demand = simulated_demand[year - start_year] * pct
+                distribution_info += f"{year}\t{area}\t{demand:.2f}\n"
+
+        messagebox.showinfo("Spatial Distribution", distribution_info)
+
+    except ValueError as ve:
+        messagebox.showerror("Error", str(ve))
+
+
+
+
+
+def show_costs_graph(start_year, num_years, outsourcing_costs, internal_costs, internal_only_costs, total_outsourcing_cost, total_internal_cost, total_combined_cost, total_no_outsource):
+    costs_window = tk.Toplevel(root)
+    costs_window.title("Cost Comparisons")
+
+    fig2, (ax3, ax4) = plt.subplots(2, 1, figsize=(10, 15), constrained_layout=True)
+
+    # Plot outsourcing vs internal costs
+    outsourcing_plot = ax3.plot(range(start_year, start_year + num_years), outsourcing_costs, label='Outsourcing Costs', color='red', marker='o')
+    internal_plot = ax3.plot(range(start_year, start_year + num_years), internal_costs, label='Internal Costs', color='blue', marker='o')
+    ax3.set_xlabel('Year')
+    ax3.set_ylabel('Cost ($)')
+    ax3.set_title('Outsourcing vs Internal Costs')
+    ax3.legend()
+    ax3.grid(True)
+    ax3.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'${x:,.0f}'))
+
+    # Annotations for total costs
+    ax3.annotate(f'Total Outsourcing Cost: ${total_outsourcing_cost:,.2f}',
+                 xy=(0.5, 0.9), xycoords='axes fraction', fontsize=10, color='red', ha='center')
+    ax3.annotate(f'Total Internal Cost: ${total_internal_cost:,.2f}',
+                 xy=(0.5, 0.85), xycoords='axes fraction', fontsize=10, color='blue', ha='center')
+    ax3.annotate(f'Total Combined Cost: ${total_combined_cost:,.2f}',
+                 xy=(0.5, 0.8), xycoords='axes fraction', fontsize=10, color='black', ha='center')
+
+    # Plot total cost if calls were never outsourced
+    total_no_outsource_plot = ax4.plot(range(start_year, start_year + num_years), internal_only_costs,
+                                       label='Total Cost if Calls Were Never Outsourced',
+                                       color='purple', marker='o')
+    ax4.set_xlabel('Year')
+    ax4.set_ylabel('Cost ($)')
+    ax4.set_title('Total Cost if Calls Were Never Outsourced')
+    ax4.legend()
+    ax4.grid(True)
+    ax4.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'${x:,.0f}'))
+
+    ax4.annotate(f'Total Cost if Calls were not Outsourced: ${total_no_outsource:,.2f}',
+                 xy=(0.5, 0.8), xycoords='axes fraction', fontsize=10, color='black', ha='center')
+
+    # Create a cursor for interactive graphs
+    mplcursors.cursor(outsourcing_plot[0]).connect("add", lambda sel: sel.annotation.set_text(f'Year: {sel.target[0]:.0f}\nCost: ${sel.target[1]:,.2f}'))
+    mplcursors.cursor(internal_plot[0]).connect("add", lambda sel: sel.annotation.set_text(f'Year: {sel.target[0]:.0f}\nCost: ${sel.target[1]:,.2f}'))
+    mplcursors.cursor(total_no_outsource_plot[0]).connect("add", lambda sel: sel.annotation.set_text(f'Year: {sel.target[0]:.0f}\nCost: ${sel.target[1]:,.2f}'))
+
+    canvas2 = FigureCanvasTkAgg(fig2, master=costs_window)
+    canvas2.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    canvas2.draw()
+
+# Create main window
+root = tk.Tk()
+root.title("Cost Forecasting Tool")
+
+# Create input frame
+input_frame = ttk.Frame(root, padding="10")
+input_frame.grid(row=0, column=0, sticky='nsew')
+
+# Create plot frame
+plot_frame = ttk.Frame(root, padding="10")
+plot_frame.grid(row=0, column=1, sticky='nsew')
+
+# Add input fields
+ttk.Label(input_frame, text="Start Year:").grid(row=0, column=0, sticky='e')
+start_year_entry = ttk.Entry(input_frame)
+start_year_entry.grid(row=0, column=1, sticky='w')
+
+ttk.Label(input_frame, text="End Year:").grid(row=1, column=0, sticky='e')
+end_year_entry = ttk.Entry(input_frame)
+end_year_entry.grid(row=1, column=1, sticky='w')
+
+ttk.Label(input_frame, text="Smoothing Method:").grid(row=2, column=0, columnspan=2, sticky='w')
+smoothing_method = tk.StringVar(value="Exponential Smoothing")
+ttk.Radiobutton(input_frame, text="Exponential Smoothing", variable=smoothing_method,
+                value="Exponential Smoothing").grid(row=3, column=0, columnspan=2, sticky='w')
+ttk.Radiobutton(input_frame, text="Simple Moving Average", variable=smoothing_method,
+                value="Simple Moving Average").grid(row=4, column=0, columnspan=2, sticky='w')
+
+ttk.Label(input_frame, text="Smoothing Factor (α):").grid(row=5, column=0, sticky='e')
+smoothing_factor_entry = ttk.Entry(input_frame)
+smoothing_factor_entry.grid(row=5, column=1, sticky='w')
+
+ttk.Label(input_frame, text="SMA Window Size:").grid(row=6, column=0, sticky='e')
+sma_window_entry = ttk.Entry(input_frame)
+sma_window_entry.grid(row=6, column=1, sticky='w')
+
+ttk.Label(input_frame, text="Outsourcing Percentage:").grid(row=7, column=0, sticky='e')
+outsourcing_percentage_entry = ttk.Entry(input_frame)
+outsourcing_percentage_entry.grid(row=7, column=1, sticky='w')
+
+ttk.Label(input_frame, text="Cost per Outsourced Call:").grid(row=8, column=0, sticky='e')
+cost_per_outsourced_call_entry = ttk.Entry(input_frame)
+cost_per_outsourced_call_entry.grid(row=8, column=1, sticky='w')
+
+ttk.Label(input_frame, text="Internal Cost per Call:").grid(row=9, column=0, sticky='e')
+internal_cost_per_call_entry = ttk.Entry(input_frame)
+internal_cost_per_call_entry.grid(row=9, column=1, sticky='w')
+
+generate_button = ttk.Button(input_frame, text="Generate Forecast", command=generate_forecast)
+generate_button.grid(row=10, column=0, columnspan=2, pady=10)
+
+spatial_dist_button = ttk.Button(input_frame, text="Show Spatial Distribution", command=show_spatial_distribution)
+spatial_dist_button.grid(row=11, column=0, columnspan=2, pady=10)
+
+# Create figure and axes for plotting
+fig, ax1 = plt.subplots(figsize=(10, 5))
+
+# Create canvas for plotting
+canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+# Run the Tkinter event loop
+root.mainloop()
